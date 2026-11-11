@@ -15,7 +15,8 @@ and build its component to `sources/<id>/source.wasm` before packaging.
 
 ## Check a change
 
-Install a plugin-capable MemCastle Core binary.
+Install a plugin-capable MemCastle Core binary with reconciliation extension `0.1.0`
+(currently development Core at `c311d09` or newer).
 For source and embedding modules, install Rust with the `wasm32-wasip2` target.
 
 Run the affected module's tests and build, then from the project root:
@@ -24,6 +25,8 @@ Run the affected module's tests and build, then from the project root:
 memcastle plugin inspect --json
 memcastle plugin package
 memcastle plugin test dist/notion-VERSION.tar.gz
+PATH="$PWD/sources/notion/fixtures/bin:$PATH" memcastle source test sources/notion
+ARCHIVE=dist/notion-VERSION.tar.gz node scripts/smoke_scoped_miners.mjs
 ```
 
 Use the actual archive name in `dist/` instead of `VERSION`.
@@ -50,4 +53,3 @@ Use releasable Conventional Commits for the gh-ship release PR flow.
 A reviewed `release/next` PR publishes the validated archive when merged.
 
 The README describes repository credentials and environment setup.
-

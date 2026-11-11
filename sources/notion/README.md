@@ -4,6 +4,11 @@ A read-only `memcastle:source@0.4.0` adapter for pages, database/data-source row
 recursive blocks, page properties, links and attachment metadata. Uses the official
 Notion API with `Notion-Version: 2026-03-11`. No binary downloads, OCR, writeback or OAuth.
 
+The module exports `reconciled-source` and declares `compatibility.reconciliation = "0.1.0"`.
+It requires Core with [memcastle/memcastle#378](https://github.com/memcastle/memcastle/pull/378),
+currently the development release at `c311d09` or newer. Older stable 0.5 Core does
+not support the extension, including older binaries also reporting version `0.5.2`.
+
 ## Set up an integration
 
 1. Create an **internal integration** for your workspace in
@@ -44,7 +49,6 @@ options = { account = "work" }
 name = "engineering"
 source = "notion"
 source_config = "notion-work"
-locator = "notion-scope:engineering"
 wing = "engineering"
 schedule = { every = "1h", enabled = true }
 options = { roots = ["11111111-1111-1111-1111-111111111111"], title_prefix = "RFC", refresh_seconds = "3600" }
@@ -53,7 +57,6 @@ options = { roots = ["11111111-1111-1111-1111-111111111111"], title_prefix = "RF
 name = "reference"
 source = "notion"
 source_config = "notion-work"
-locator = "notion-scope:reference"
 wing = "reference"
 schedule = { every = "1h", enabled = true }
 options = { data_sources = ["22222222-2222-2222-2222-222222222222"], property_filter = '{"property":"Status","status":{"equals":"Published"}}' }
@@ -62,12 +65,13 @@ options = { data_sources = ["22222222-2222-2222-2222-222222222222"], property_fi
 A file credential uses Core's `credential = { type = "file", path = "/absolute/path/to/token" }`
 instead. Keep secrets out of version control and ordinary source/miner options.
 
-`account` is a required stable, non-secret workspace namespace. The locator must be
-`notion-scope:<name>` using letters, digits, `-`, `_`, or `.`. Give **every independent
-miner a different locator**, even if their selections initially match. Keep account,
-scope locator, source-config ID, and destination/mapping stable through filter edits
-and miner renames. They define Core storage identity; changing them is a migration,
-not a way to clean up previously mined records.
+`account` is a required stable, non-secret workspace namespace. Omit the locator
+or use `workspace`; named miners can share it, the credential and even the destination.
+Core partitions their document inventory and checkpoints automatically. Keep the
+miner name, account, locator, source-config ID and destination/mapping stable through
+filter edits. Renaming a miner or changing those identity selectors creates a separate
+history; filter edits preserve identity and reconcile the previous selection.
+Legacy `notion-scope:<name>` locators remain accepted, but uniqueness is no longer required.
 
 ## Scope and filters
 
@@ -88,8 +92,7 @@ hyphens are optional. Options are validated locally and unknown options are erro
 | `title_glob` | Case-sensitive glob (`*`, `?`, character classes). |
 | `title_regex` | Rust regular expression; no backreferences/lookaround. |
 | `property_filter` | JSON property predicate, described below. |
-| `refresh_seconds` | Full reconciliation interval, 60–2592000 seconds; default 3600. |
-| `rescan` | Change this string generation key to force reconciliation while preserving inventory. |
+| `refresh_seconds` | New-content discovery interval, 60–2592000 seconds; default 3600. Known pages reconcile every Core cycle. |
 
 At least one selection anchor or `workspace=true` is required. Anchors form a union;
 title and property filters intersect that union; excluded branches always win.
@@ -156,51 +159,68 @@ with sharing guidance rather than guessing scope.
 
 ## Synchronization and removal
 
-The first run discovers selected content; following runs resume durable pending
-tasks. After a completed scan, later runs reconcile when the refresh interval is
-due. Every reconciliation directly rechecks known page metadata, periodically
-refreshes selected recursive block bodies (including independently edited nested
-blocks), and rediscovers selected roots/data sources/search results. Content-derived
-revisions make unchanged ingestion idempotent. This is polling-based incremental
-ingestion, not webhook or edit-watermark-only synchronization.
+Core walks its durable document inventory before discovery. The source rechecks
+known page metadata against current access and filters, returning an explicit
+`refresh` or `retire` decision. Included pages refresh their recursive block bodies
+even if page timestamps are unchanged, so independently edited nested blocks are
+detected. Content-derived revisions make unchanged ingestion idempotent. The miner's
+schedule controls reconciliation frequency; `refresh_seconds` controls how often
+completed discovery restarts to find new pages in roots, data sources and search.
+Interrupted discovery and Core inventory walks resume across document-limited jobs.
 
 Notion search is eventually consistent and not an exhaustive inventory. Newly shared
 old pages are discovered on subsequent scans even when their timestamps are old.
 Absence from search/query results never proves deletion. Direct object-specific 404,
-trash state, or confirmed scope/filter changes create same-ID, zero-segment tombstones
-that retire current chunks. Global auth errors, rate limits, and unresolved scope-critical ancestry
+trash state, or confirmed scope/filter changes return explicit retirement decisions
+and Core closes the current chunks. Global auth errors, rate limits, and unresolved scope-critical ancestry
 fail the run instead of causing mass retirement. Retired chunks remain historical
 Core records; retirement is not historical erasure. Restored pages can be mined again.
 
-The versioned checkpoint keeps known IDs and traversal state, never credentials or
-page bodies. Before acquiring any new page, a progress candidate durably registers
-its ID. Failed acquisition/ingestion cannot checkpoint past that page. Progress
-candidates also persist filtered-only pages and scan completion, and count toward
-Core's document limit; a small limit may require multiple continuation jobs.
+Core registers each discovered document ID before acquisition, retaining pending
+IDs after failed or interrupted first ingestion. The plugin's version-2 cursor holds
+only discovery traversal/deduplication and bounded diagnostics, never the persistent
+document inventory, credentials or page bodies. Empty filtered pages and scan
+completion use page-level checkpoints instead of synthetic document candidates.
+Actual acquisition and inventory checks count toward Core's document limit; empty
+progress pages do not. No zero-segment tombstones or cursor-registration documents
+are generated.
 
-To force an early rescan, change the saved miner's `rescan` value (for example to a
-new date or sequence number), then run it normally. Retain that value while the scan
-continues. Core may require its standard `allow_broaden` acknowledgement when updating
-options; no source-specific broadening rules are guessed for compound filters.
+Use an ordinary full run to force early rediscovery:
+
+```sh
+memcastle miner run engineering --full
+```
+
+Core retains its inventory across `--full` and filter edits, so inaccessible or
+out-of-scope previously mined pages can still be retired. Continue a truncated full
+scan with normal runs rather than starting another full run on every continuation.
+Scope changes still use Core's standard `allow_broaden` acknowledgement where required.
+Core serializes concurrent jobs for one effective source and transactionally fences
+canonical writes; independent miners can run concurrently and share credentials.
+
+### Upgrading from the cursor-inventory implementation
+
+Opting into Core reconciliation changes named-miner storage identities. Previously
+mined legacy states remain in the palace; they are not automatically claimed by the
+new named-miner identity, and a full run of the new identity does not clean up the
+old one. Plan an explicit transition of those histories before relying on retirement
+of content mined by an older archive. Retain the previous archive/checkpoints until
+that transition is complete. No migration of a real palace is performed by this plugin.
+Remove the old `rescan` miner option; `--full` replaces it. Existing scope locators
+remain valid, but new miners can simply omit them. Version-1 provider cursors are
+not reused as version-2 discovery checkpoints.
 
 ### Operating bounds
 
-- **Do not use Core `--full` for reconciliation:** it discards the inventory, so the
-  plugin cannot find inaccessible previously mined IDs. Use `rescan` instead. Keep
-  and restore inventory checkpoints when recovering existing scopes.
-- Run only **one in-flight job per scope**. Core does not serialize same-scope cursor
-  writers. Independent scopes can run concurrently and share credentials.
 - Calls have a 40-second acquisition budget; requests use bounded retry/backoff.
   HTTP 429/529 respects `Retry-After`. If the wait cannot fit, the job fails with the
   minimum retry delay; retry after that delay through your schedule/operator.
 - Maximum response size: 8 MiB; page acquisition: 20000 blocks/items and 50 levels;
   checkpoint: 4 MiB. Oversized content fails without truncation/checkpoint advancement.
-  Divide large scopes/pages rather than dropping inventory.
+  Divide large discovery scopes/pages rather than silently truncating traversal.
 - Incomplete data-source queries are recursively partitioned by creation timestamp.
   An unsplittable millisecond containing too many rows fails with a request to narrow
   property filters, rather than silently declaring the data source fully scanned.
-- Same-scope concurrency protection and inventory recovery after arbitrary Core
-  `--full` resets require generic Core support; this plugin does not modify Core.
 
 ## Build and verify
 
@@ -216,14 +236,19 @@ cp sources/notion/target/wasm32-wasip2/release/notion.wasm sources/notion/source
 memcastle plugin inspect --json
 memcastle plugin package
 memcastle plugin test dist/notion-VERSION.tar.gz
+PATH="$PWD/sources/notion/fixtures/bin:$PATH" memcastle source test sources/notion
 ARCHIVE=dist/notion-VERSION.tar.gz node scripts/smoke_scoped_miners.mjs
 ```
 
-Install the `wasm32-wasip2` target and use a plugin-capable Core. Commit `Cargo.lock`.
+Install the `wasm32-wasip2` target and use reconciliation-capable Core for all
+publisher/test commands, as well as the daemon. Commit `Cargo.lock`.
 The smoke suite requires Node.js 24+ and Python 3, uses real Wasm and an isolated Core
 daemon, and replaces curl with offline scenarios. Generic `memcastle source test`
-does not supply selected credentials or opaque locators and is not this module's
-contract runner. CI runs the archive suite on development and stable 0.5 Core.
+uses the opaque `workspace` locator and `[test] fixture_credential = true`, which
+supplies only Core's fixed synthetic token `memcastle-source-test-credential`.
+The fake transport also accepts the smoke suite's dummy selected token; production
+acquisition has no credential bypass. CI runs conformance and installed-archive
+lifecycle checks on development Core until a stable release includes the extension.
 
 If access fails, check that the credential is available **to the daemon**, the
 integration has Read content, pages/databases are shared, and IDs select the correct

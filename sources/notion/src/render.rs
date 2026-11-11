@@ -44,7 +44,7 @@ pub(crate) fn provenance(document: &Value) -> Value {
         .map(|blocks| blocks.iter().map(block_metadata).collect::<Vec<_>>())
         .unwrap_or_default();
     revision_value(
-        &json!({"format":1,"lifecycle":"live","page":document["page"],"hierarchy":document["hierarchy"],"blocks":blocks,"selection":"included"}),
+        &json!({"format":1,"page":document["page"],"hierarchy":document["hierarchy"],"blocks":blocks,"selection":"included"}),
     )
 }
 
@@ -202,14 +202,9 @@ fn block_text(block: &Value, depth: usize, output: &mut String) {
 }
 
 pub(crate) fn normalize(raw: RawDocument) -> Result<CanonicalDocument, String> {
-    let metadata: Value =
-        serde_json::from_str(&raw.metadata).map_err(|_| "invalid Notion metadata")?;
-    let tombstone = metadata["lifecycle"] == "tombstone";
     let mut tags = Vec::new();
     let mut body = String::new();
-    let (name, uri) = if tombstone {
-        (None, None)
-    } else {
+    let (name, uri) = {
         let document: Value =
             serde_json::from_str(&raw.body).map_err(|_| "invalid Notion document")?;
         let page = &document["page"];
@@ -278,11 +273,7 @@ pub(crate) fn normalize(raw: RawDocument) -> Result<CanonicalDocument, String> {
         kind: SourceKind::Other,
         uri,
         tags,
-        segments: if tombstone {
-            vec![]
-        } else {
-            vec![Segment { text: body }]
-        },
+        segments: vec![Segment { text: body }],
     })
 }
 
@@ -392,10 +383,14 @@ mod tests {
         );
     }
     #[test]
-    fn tombstones_have_no_searchable_segments_and_are_stable() {
-        let first = crate::tombstone("one", "unavailable");
-        let second = crate::tombstone("one", "unavailable");
-        assert_eq!(first.revision, second.revision);
-        assert!(normalize(first).unwrap().segments.is_empty());
+    fn missing_document_data_is_an_error_not_an_implicit_retirement() {
+        let raw = RawDocument {
+            external_id: "one".into(),
+            revision: "missing".into(),
+            body: String::new(),
+            metadata: "{}".into(),
+            occurred_at: None,
+        };
+        assert!(normalize(raw).is_err());
     }
 }

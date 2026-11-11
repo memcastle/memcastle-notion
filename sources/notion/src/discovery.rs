@@ -1,9 +1,10 @@
-//! Acknowledged, write-ahead inventory. Progress candidates never create documents.
+//! Bounded discovery traversal. Core owns the persistent document inventory.
 use crate::{
     api::Client,
     config::{Config, id},
+    exports::memcastle::source::reconciliation::DiscoveryPage,
     failed,
-    memcastle::source::types::{Candidate, Discovery, SourceError, SourceRef},
+    memcastle::source::types::{Candidate, SourceError, SourceRef},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -18,9 +19,6 @@ const MAX_CURSOR: usize = 4 * 1024 * 1024;
 #[serde(tag = "task", rename_all = "snake_case", deny_unknown_fields)]
 enum Task {
     Page {
-        id: String,
-    },
-    Read {
         id: String,
     },
     Blocks {
@@ -50,7 +48,6 @@ struct State {
     version: u32,
     scope: String,
     fingerprint: String,
-    known: BTreeSet<String>,
     visited: BTreeSet<String>,
     queue: VecDeque<Task>,
     next_scan: u64,
@@ -69,16 +66,13 @@ impl State {
         }
         if cursor.trim() == "null" {
             return Ok(Self {
-                version: 1,
+                version: 2,
                 scope: scope.into(),
                 ..Self::default()
             });
         }
-        let state: Self = serde_json::from_str(cursor).map_err(|_| SourceError::CursorInvalid("invalid Notion checkpoint; restore a valid checkpoint rather than resetting inventory".into()))?;
-        if state.version != 1
-            || state.scope != scope
-            || state.known.iter().any(|v| id(v).as_ref() != Ok(v))
-        {
+        let state: Self = serde_json::from_str(cursor).map_err(|_| SourceError::CursorInvalid("invalid or legacy Notion discovery checkpoint; use a full run with reconciliation-capable Core".into()))?;
+        if state.version != 2 || state.scope != scope {
             return Err(SourceError::CursorInvalid(
                 "unsupported Notion checkpoint version or scope".into(),
             ));
@@ -92,13 +86,7 @@ impl State {
         self.discovery_decisions.clear();
         self.queue.clear();
         self.generation += 1;
-        // Recheck old IDs independently of server filters and search completeness.
-        for id in self
-            .known
-            .iter()
-            .chain(config.pages.iter())
-            .chain(config.roots.iter())
-        {
+        for id in config.pages.iter().chain(config.roots.iter()) {
             self.queue.push_back(Task::Page { id: id.clone() });
         }
         for id in &config.databases {
@@ -121,7 +109,7 @@ impl State {
             serde_json::to_string(self).map_err(|_| failed("cannot encode Notion checkpoint"))?;
         if cursor.len() > MAX_CURSOR {
             return Err(failed(
-                "Notion inventory exceeds 4 MiB; divide the scope into smaller miners (preserve the original inventory for cleanup)",
+                "Notion traversal checkpoint exceeds 4 MiB; narrow the discovery scope and run a full scan",
             ));
         }
         Ok(cursor)
@@ -157,7 +145,7 @@ pub(crate) fn discover(
     config: &Config,
     cursor: &str,
     limit: u32,
-) -> Result<Discovery, SourceError> {
+) -> Result<DiscoveryPage, SourceError> {
     advance(
         source,
         config,
@@ -175,7 +163,7 @@ fn advance(
     limit: u32,
     client: &Client,
     time: u64,
-) -> Result<Discovery, SourceError> {
+) -> Result<DiscoveryPage, SourceError> {
     if limit == 0 {
         return Err(SourceError::InvalidInput(
             "discovery limit must be positive".into(),
@@ -186,9 +174,10 @@ fn advance(
     {
         state.start(config, time);
     } else if state.queue.is_empty() {
-        return Ok(Discovery {
+        return Ok(DiscoveryPage {
             candidates: vec![],
             exhausted: true,
+            cursor_after: None,
         });
     }
 
@@ -198,9 +187,6 @@ fn advance(
         .ok_or_else(|| failed("Notion scope has no traversal tasks"))?;
     let mut read_id = None;
     match task {
-        Task::Read { id } => {
-            read_id = Some(id);
-        }
         Task::Page { id: page_id } => {
             if state.visited.insert(format!("page:{page_id}")) {
                 let page = client
@@ -209,20 +195,13 @@ fn advance(
                 match page {
                     None => {
                         state.decision(&page_id, "unavailable");
-                        if state.known.contains(&page_id) {
-                            state.queue.push_front(Task::Read { id: page_id });
-                        }
                     }
                     Some(mut page) => {
                         client.complete_properties(&mut page).map_err(failed)?;
                         let reason = selection(client, config, &page).map_err(failed)?;
                         state.decision(&page_id, reason);
-                        if reason == "included" || state.known.contains(&page_id) {
-                            // Persist registration BEFORE a subsequent call can acquire the page.
-                            state.known.insert(page_id.clone());
-                            state.queue.push_front(Task::Read {
-                                id: page_id.clone(),
-                            });
+                        if reason == "included" {
+                            read_id = Some(page_id.clone());
                         }
                         // Metadata filters must not cut traversal to potentially matching descendants.
                         if page["in_trash"] != true
@@ -381,17 +360,21 @@ fn advance(
     let exhausted = state.queue.is_empty();
     if exhausted {
         state.next_scan = time.saturating_add(config.refresh);
+        // Deduplication belongs only to this traversal, not a cross-run inventory.
+        state.visited.clear();
     }
-    let (external_id, handle) = read_id
-        .map(|id| (id, "page".to_string()))
-        .unwrap_or_else(|| ("notion-progress".into(), "progress".into()));
-    Ok(Discovery {
-        candidates: vec![Candidate {
-            external_id,
-            handle,
-            cursor_after: state.checkpoint()?,
-        }],
+    let checkpoint = state.checkpoint()?;
+    Ok(DiscoveryPage {
+        candidates: read_id
+            .into_iter()
+            .map(|id| Candidate {
+                external_id: id,
+                handle: "page".into(),
+                cursor_after: checkpoint.clone(),
+            })
+            .collect(),
         exhausted,
+        cursor_after: Some(checkpoint),
     })
 }
 
@@ -586,12 +569,12 @@ mod tests {
         let mut exhausted = false;
         for _ in 0..50 {
             let result = advance(&source(), &config, &cursor, 10, &client, 100).unwrap();
-            assert_eq!(result.candidates.len(), 1);
-            let candidate = &result.candidates[0];
-            if candidate.handle == "page" {
+            assert!(result.candidates.len() <= 1);
+            if let Some(candidate) = result.candidates.first() {
+                assert_eq!(candidate.handle, "page");
                 reads.insert(candidate.external_id.clone());
             }
-            cursor = candidate.cursor_after.clone();
+            cursor = result.cursor_after.unwrap();
             if result.exhausted {
                 exhausted = true;
                 break;
@@ -611,17 +594,20 @@ mod tests {
             ("title_prefix".into(), "No match".into()),
         ])
         .unwrap();
-        // Changing filters preserves and reconciles previously live IDs.
+        // Changing filters restarts only discovery; Core owns prior document IDs.
         let result = advance(&source(), &config, &cursor, 10, &client, 102).unwrap();
-        let state = State::load(&result.candidates[0].cursor_after, &source().locator).unwrap();
-        assert!(state.known.contains(PAGE));
-        assert_eq!(
-            state.discovery_decisions.back().unwrap().1,
-            "metadata_filter"
+        let checkpoint = result.cursor_after.unwrap();
+        let state = State::load(&checkpoint, &source().locator).unwrap();
+        assert!(matches!(state.queue.front(), Some(Task::Page { .. })));
+        assert!(
+            serde_json::from_str::<Value>(&checkpoint)
+                .unwrap()
+                .get("known")
+                .is_none()
         );
     }
     #[test]
-    fn write_ahead_registration_replay_completion_and_new_generation() {
+    fn real_candidates_replay_until_acknowledged_without_registration_documents() {
         let config = Config::parse(&[
             ("account".into(), "work".into()),
             ("pages".into(), PAGE.into()),
@@ -629,21 +615,21 @@ mod tests {
         .unwrap();
         let client = Client::fixture(|_, _| reply(200, page(PAGE)));
         let first = advance(&source(), &config, "null", 1, &client, 100).unwrap();
-        assert_eq!(first.candidates[0].handle, "progress");
-        let registered = &first.candidates[0].cursor_after;
-        let state = State::load(registered, &source().locator).unwrap();
-        assert!(state.known.contains(PAGE));
+        assert_eq!(first.candidates[0].handle, "page");
+        assert_eq!(first.candidates[0].external_id, PAGE);
+        let checkpoint = first.cursor_after.as_ref().unwrap();
+        assert_eq!(&first.candidates[0].cursor_after, checkpoint);
+        let state = State::load(checkpoint, &source().locator).unwrap();
+        assert_eq!(state.version, 2);
+        assert!(state.visited.is_empty());
         assert_eq!(state.discovery_decisions.back().unwrap().1, "included");
-        assert!(matches!(state.queue.front(), Some(Task::Read { .. })));
-        let read = advance(&source(), &config, registered, 1, &client, 100).unwrap();
-        let replay = advance(&source(), &config, registered, 1, &client, 100).unwrap();
-        assert_eq!(read.candidates[0].external_id, PAGE);
+        let replay = advance(&source(), &config, "null", 1, &client, 100).unwrap();
         assert_eq!(
-            read.candidates[0].cursor_after,
+            first.candidates[0].cursor_after,
             replay.candidates[0].cursor_after
         );
-        assert!(read.exhausted);
-        let terminal = &read.candidates[0].cursor_after;
+        assert!(first.exhausted);
+        let terminal = checkpoint;
         assert!(
             advance(&source(), &config, terminal, 1, &client, 101)
                 .unwrap()
@@ -659,7 +645,7 @@ mod tests {
         assert!(advance(&source(), &config, "null", 0, &client, 100).is_err());
         let broken = Client::fixture(|_, _| reply(401, json!({"private":"secret"})));
         assert!(advance(&source(), &config, "null", 1, &broken, 100).is_err());
-        assert!(advance(&source(), &config, registered, 1, &client, 100).is_ok());
+        assert!(advance(&source(), &config, "null", 1, &client, 100).is_ok());
     }
     #[test]
     fn ancestry_exclusion_scope_and_metadata_are_independent() {
@@ -721,27 +707,50 @@ mod tests {
             )
         });
         let discovery = advance(&source(), &config, "null", 1, &client, 100).unwrap();
-        let state = State::load(&discovery.candidates[0].cursor_after, &source().locator).unwrap();
+        assert!(discovery.candidates.is_empty());
+        let state = State::load(&discovery.cursor_after.unwrap(), &source().locator).unwrap();
         assert_eq!(state.queue.len(), 3);
         assert!(matches!(state.queue.front(), Some(Task::Page { .. })));
         assert!(matches!(state.queue.back(),Some(Task::Query {from,..}) if *from > 0));
     }
     #[test]
-    fn cursor_preserves_inventory_on_scope_change() {
+    fn page_checkpoints_advance_filtered_traversal_without_fake_candidates() {
         let key = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
         let config = Config::parse(&[
             ("account".into(), "work".into()),
-            ("pages".into(), key.into()),
+            ("roots".into(), key.into()),
+            ("title_prefix".into(), "No match".into()),
         ])
         .unwrap();
-        let mut state = State::load("null", "notion-scope:one").unwrap();
-        state.known.insert(key.into());
-        state.start(&config, 10);
-        let loaded = State::load(&state.checkpoint().unwrap(), "notion-scope:one").unwrap();
-        assert!(loaded.known.contains(key));
-        assert!(matches!(loaded.queue.front(), Some(Task::Page { .. })));
-        assert!(State::load(&state.checkpoint().unwrap(), "notion-scope:other").is_err());
+        let client = Client::fixture(move |path, _| {
+            reply(
+                200,
+                if path.starts_with("/pages/") {
+                    page(PAGE)
+                } else {
+                    json!({"results":[],"has_more":false})
+                },
+            )
+        });
+        let first = advance(&source(), &config, "null", 1, &client, 100).unwrap();
+        assert!(first.candidates.is_empty());
+        assert!(!first.exhausted);
+        let checkpoint = first.cursor_after.unwrap();
+        assert_ne!(checkpoint, "null");
+        let next = advance(&source(), &config, &checkpoint, 1, &client, 100).unwrap();
+        assert!(next.candidates.is_empty());
+        assert!(next.exhausted);
+        let terminal = next.cursor_after.unwrap();
+        assert_ne!(checkpoint, terminal);
+        assert!(
+            advance(&source(), &config, &terminal, 1, &client, 101)
+                .unwrap()
+                .cursor_after
+                .is_none()
+        );
+        assert!(State::load(&terminal, "other-workspace").is_err());
         assert!(State::load("{}", "notion-scope:one").is_err());
+        assert!(State::load(r#"{"version":1,"known":[]}"#, "workspace").is_err());
     }
     #[test]
     fn rejects_repeated_pagination() {

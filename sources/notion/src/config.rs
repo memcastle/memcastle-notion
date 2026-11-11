@@ -53,7 +53,6 @@ impl Config {
                 "exclude_blocks",
                 "workspace",
                 "refresh_seconds",
-                "rescan",
                 "title_prefix",
                 "title_glob",
                 "title_regex",

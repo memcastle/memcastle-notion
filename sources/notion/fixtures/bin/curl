@@ -14,19 +14,21 @@ for line in sys.stdin.read().splitlines():
         headers.append(value)
     else:
         config[key] = value
-assert "Authorization: Bearer fixture-selected-token" in headers
+fixture_tokens = ("fixture-selected-token", "memcastle-source-test-credential")
+assert any(f"Authorization: Bearer {token}" in headers for token in fixture_tokens)
 assert "Notion-Version: 2026-03-11" in headers
-assert all("fixture-selected-token" not in arg for arg in sys.argv)
+assert all(token not in arg for token in fixture_tokens for arg in sys.argv)
 scenario_path = pathlib.Path(__file__).with_name("scenario.json")
-scenario = json.loads(scenario_path.read_text())
+scenario = json.loads(scenario_path.read_text()) if scenario_path.exists() else {}
 url = urllib.parse.urlsplit(config["url"])
 assert url.scheme == "https" and url.netloc == "api.notion.com"
 path = url.path.removeprefix("/v1")
 query = urllib.parse.parse_qs(url.query)
 data = json.loads(config.get("data", "{}"))
-log_path = pathlib.Path(__file__).with_name("requests.jsonl")
-with log_path.open("a") as log:
-    log.write(json.dumps({"path": path, "query": query, "data": data}) + "\n")
+if scenario_path.exists():
+    log_path = pathlib.Path(__file__).with_name("requests.jsonl")
+    with log_path.open("a") as log:
+        log.write(json.dumps({"path": path, "query": query, "data": data}) + "\n")
 
 A, B, C, D, E, F = [f"{c * 8}-{c * 4}-{c * 4}-{c * 4}-{c * 12}" for c in "123456"]
 G, H, I = [f"{c * 8}-{c * 4}-{c * 4}-{c * 4}-{c * 12}" for c in "789"]

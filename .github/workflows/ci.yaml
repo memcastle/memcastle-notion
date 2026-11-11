@@ -147,7 +147,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        core: ["development", "0.5"]
+        core: ["development"]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -165,9 +165,14 @@ jobs:
         with:
           name: plugin-package
           path: .
-      # The generic source fixture runner cannot provide a selected credential or
-      # preserve opaque scope locators. Exercise the installed Wasm through real
-      # source configurations/miners instead, using an offline curl fixture.
+      - name: Validate the source contract with offline API fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p sources/notion/dist
+          cp sources/notion/source.wasm sources/notion/dist/source.wasm
+          PATH="$PWD/sources/notion/fixtures/bin:$PATH" memcastle source test sources/notion --no-build
+      # Installed-archive checks also verify Core inventory, retirement, full
+      # rescans and independently scoped miners through the production job path.
       - name: Validate archive and Notion lifecycle
         run: |
           set -euo pipefail

@@ -7,7 +7,8 @@ description = "Scoped Notion pages, block trees and database/data-source knowled
 
 [compatibility]
 contract = "0.4.0"
-memcastle = ">=0.5, <0.6"
+memcastle = ">=0.5.2, <0.6"
+reconciliation = "0.1.0"
 
 [capabilities]
 incremental = true
@@ -72,15 +73,12 @@ description = "JSON property predicate; supported Notion and/or, text, select/st
 
 [options.refresh_seconds]
 type = "string"
-description = "Complete reconciliation interval, 60..2592000 seconds; default 3600"
-
-[options.rescan]
-type = "string"
-description = "Change this generation key to force inventory-preserving reconciliation"
+description = "New-content discovery interval, 60..2592000 seconds; default 3600; known pages reconcile each Core cycle"
 
 [build]
 command = ["cargo", "build", "--release", "--target", "wasm32-wasip2", "--target-dir", "target"]
 output = "target/wasm32-wasip2/release/notion.wasm"
 
-# Selected-credential contract checks run through scripts/smoke_scoped_miners.mjs.
-# Core's generic fixture runner cannot inject a selected source credential.
+[test]
+fixtures = "fixtures/conformance"
+fixture_credential = true
