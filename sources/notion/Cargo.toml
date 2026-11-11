@@ -1,0 +1,20 @@
+[package]
+name = "notion"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.57"
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+
+# Independent workspace: this module builds inside a provider monorepo or alone.
+[workspace]

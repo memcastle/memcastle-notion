@@ -1,0 +1,24 @@
+format = 1
+
+[source]
+name = "notion"
+version = "0.1.0"
+description = "Text files from a selected directory"
+
+[compatibility]
+contract = "0.4.0"
+memcastle = ">=0.5, <0.6"
+
+[capabilities]
+incremental = true
+
+# The host only allows access to the chosen directory.
+[permissions.filesystem]
+read = ["locator"]
+
+[build]
+command = ["cargo", "build", "--release", "--target", "wasm32-wasip2", "--target-dir", "target"]
+output = "target/wasm32-wasip2/release/notion.wasm"
+
+[test]
+fixtures = "fixtures"

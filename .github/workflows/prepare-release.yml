@@ -1,0 +1,104 @@
+name: 🚀 Prepare release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: release
+      deployment: false
+    steps:
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: jdx/mise-action@v5
+        with:
+          cache: true
+      - name: Install gh-ship
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh extension install noirbizarre/gh-ship
+      - name: Calculate version and release notes
+        id: version
+        run: |
+          set -euo pipefail
+          last_tag="$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || true)"
+          next_tag="$(git cliff --bumped-version)"
+          if [[ "$last_tag" == "$next_tag" ]]; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          version="$next_tag"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::git-cliff produced an invalid plugin tag: $next_tag"; exit 1;
+          }
+          {
+            echo "changed=true"
+            echo "version=$version"
+            echo "tag=$next_tag"
+          } >> "$GITHUB_OUTPUT"
+      - name: Generate release changelog and notes
+        if: ${{ steps.version.outputs.changed == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git cliff --bump -o CHANGELOG.md
+          git cliff --unreleased --bump --strip all -o "$RUNNER_TEMP/ship-notes.md"
+      - name: Push release commit
+        if: ${{ steps.version.outputs.changed == 'true' && !inputs.dry_run }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add CHANGELOG.md
+          git commit -m "chore(release): ${{ steps.version.outputs.version }}"
+          git push origin HEAD
+
+      - name: Sign the release commit as the App
+        if: ${{ steps.version.outputs.changed == 'true' && !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh ship sign
+
+      - name: Write the release artifact
+        env:
+          CHANGED: ${{ steps.version.outputs.changed }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$CHANGED" == true ]]; then
+            jq -n --arg version "$VERSION" --arg tag "$TAG" --rawfile notes "$RUNNER_TEMP/ship-notes.md" \
+              '{schemaVersion: 1, changed: true, version: $version, tag: $tag, release: {notes: $notes}}' > ship.release.json
+          else
+            jq -n '{schemaVersion: 1, changed: false}' > ship.release.json
+          fi
+      - name: Validate release artifact
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh ship validate ship.release.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ship-release
+          path: ship.release.json
+          if-no-files-found: error

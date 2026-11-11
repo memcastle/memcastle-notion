@@ -1,0 +1,75 @@
+name: 📦 Publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: 🧪 Validate release archive
+
+    permissions:
+      contents: read
+      id-token: write
+
+    uses: ./.github/workflows/ci.yaml
+    with:
+      tag: ${{ inputs.tag }}
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    environment:
+      name: release
+      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
+    steps:
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: memcastle/memcastle@main
+        with:
+          version: development
+      - name: Require reviewed tag on main and existing draft
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          expected="$(memcastle plugin inspect --json | jq -er '.plugin.version')"
+          [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo '::error::invalid release version tag'; exit 1; }
+          test "$TAG" = "$expected" || { echo '::error::tag does not match plugin.toml'; exit 1; }
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main || { echo '::error::tag must be on main'; exit 1; }
+          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true
+      - uses: actions/download-artifact@v8
+        with:
+          name: plugin-package
+      - name: Upload validated archive
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          plugin_id="$(memcastle plugin inspect --json | jq -er '.plugin.id')"
+          archive="dist/${plugin_id}-${TAG}.tar.gz"
+          test -s "$archive"
+          checksum="${archive%.tar.gz}.sha256sum"
+          test -s "$checksum"
+          gh release upload "$TAG" "$archive" "$checksum" --clobber
