@@ -8,7 +8,7 @@ source = "https://github.com/memcastle/memcastle-plugin.tpl"
 
 [answers]
 codecov = true
-codecov_covered_sources = []
+codecov_covered_sources = ["notion"]
 codecov_integration_target = "80%"
 codecov_patch_target = "80%"
 codecov_project_target = "80%"

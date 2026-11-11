@@ -1,123 +1,171 @@
-//! A minimal incremental MemCastle source that reads `.txt` files from its locator.
+//! Read-only Notion acquisition. Durable state belongs to Core's acknowledged cursor.
 
-use serde_json::{Value, json};
-use std::path::Path;
-
-wit_bindgen::generate!({ path: "wit", world: "source" });
+mod api;
+mod config;
+mod discovery;
+mod render;
 
 use exports::memcastle::source::adapter::Guest;
 use memcastle::source::types::{
-    Candidate, CanonicalDocument, Discovery, RawDocument, Segment, SourceError, SourceKind,
-    SourceRef,
+    Candidate, CanonicalDocument, Discovery, RawDocument, SourceError, SourceRef,
 };
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+
+wit_bindgen::generate!({ path: "wit", world: "source" });
 
 struct Source;
+
+fn hash(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+fn failed(error: impl Into<String>) -> SourceError {
+    SourceError::Failed(error.into())
+}
 
 impl Guest for Source {
     fn identify(
         locator: Option<String>,
         options: Vec<(String, String)>,
     ) -> Result<SourceRef, SourceError> {
-        if !options.is_empty() {
+        let locator = locator.ok_or_else(|| {
+            SourceError::InvalidInput("set a unique stable notion-scope:<name> locator".into())
+        })?;
+        let name = locator.strip_prefix("notion-scope:").unwrap_or("");
+        if name.is_empty()
+            || name.len() > 100
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        {
             return Err(SourceError::InvalidInput(
-                "this source accepts no options".into(),
+                "locator must be notion-scope:<name> (letters, digits, -, _, .)".into(),
             ));
         }
-        let locator =
-            locator.ok_or_else(|| SourceError::InvalidInput("give a directory to mine".into()))?;
-        if !Path::new(&locator).is_dir() {
-            return Err(SourceError::InvalidInput(format!(
-                "{locator} is not a readable directory"
-            )));
-        }
+        let config = config::Config::parse(&options).map_err(SourceError::InvalidInput)?;
         Ok(SourceRef {
             source: "notion".into(),
-            account: None,
+            account: Some(config.account),
             locator,
             options,
         })
     }
 
     fn default_wing(source: SourceRef) -> String {
-        Path::new(&source.locator).file_name().map_or_else(
-            || "files".into(),
-            |name| name.to_string_lossy().into_owned(),
-        )
+        source
+            .locator
+            .strip_prefix("notion-scope:")
+            .unwrap_or("notion")
+            .to_string()
     }
 
     fn default_room() -> String {
-        "notes".into()
+        "pages".into()
     }
 
     fn discover(source: SourceRef, cursor: String, limit: u32) -> Result<Discovery, SourceError> {
-        let last: Value = serde_json::from_str(&cursor)
-            .map_err(|_| SourceError::CursorInvalid("invalid JSON cursor".into()))?;
-        let after = if last.is_null() {
-            None
-        } else {
-            Some(
-                last.get("after")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| SourceError::CursorInvalid("missing `after`".into()))?,
-            )
-        };
-        let mut names: Vec<_> = std::fs::read_dir(&source.locator)
-            .map_err(|e| SourceError::Failed(e.to_string()))?
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .filter(|name| name.ends_with(".txt") && after.is_none_or(|last| name.as_str() > last))
-            .collect();
-        names.sort();
-        let exhausted = names.len() <= limit as usize;
-        names.truncate(limit as usize);
-        Ok(Discovery {
-            candidates: names
-                .into_iter()
-                .map(|name| Candidate {
-                    cursor_after: json!({"after": name}).to_string(),
-                    handle: name.clone(),
-                    external_id: name,
-                })
-                .collect(),
-            exhausted,
-        })
+        let config = config::Config::parse(&source.options).map_err(SourceError::InvalidInput)?;
+        discovery::discover(&source, &config, &cursor, limit)
     }
 
     fn read(source: SourceRef, candidate: Candidate) -> Result<Option<RawDocument>, SourceError> {
-        let path = Path::new(&source.locator).join(&candidate.handle);
-        let Ok(body) = std::fs::read_to_string(&path) else {
+        if candidate.handle == "progress" {
             return Ok(None);
-        };
-        // A content hash, rather than the file's timestamp, detects edits without needless re-ingestion.
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for byte in body.bytes() {
-            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
         }
+        let config = config::Config::parse(&source.options).map_err(SourceError::InvalidInput)?;
+        let id = config::id(&candidate.external_id).map_err(SourceError::InvalidInput)?;
+        let client = api::Client::new().map_err(failed)?;
+        let page = match client
+            .get_optional(&format!("/pages/{id}"))
+            .map_err(failed)?
+        {
+            Some(page) => page,
+            None => return Ok(Some(tombstone(&id, "unavailable"))),
+        };
+        let mut page = page;
+        if config::id(page["id"].as_str().unwrap_or("")).map_err(failed)? != id {
+            return Err(failed("Notion returned a different page ID"));
+        }
+        client.complete_properties(&mut page).map_err(failed)?;
+        let reason = discovery::selection(&client, &config, &page).map_err(failed)?;
+        if reason != "included" {
+            return Ok(Some(tombstone(&id, reason)));
+        }
+        let blocks = client.tree(&id, &config).map_err(failed)?;
+        let hierarchy = discovery::hierarchy(&client, &page).map_err(failed)?;
+        let metadata = json!({"page": page, "blocks": blocks, "hierarchy":hierarchy, "selection": "included", "format": 1});
+        // Signed file URLs rotate without content changes. Canonicalize only the revision input.
+        let revision = hash(&render::revision_value(&metadata).to_string());
         Ok(Some(RawDocument {
-            external_id: candidate.external_id,
-            revision: format!("{hash:016x}"),
-            body,
-            metadata: json!({"path": path.display().to_string()}).to_string(),
-            occurred_at: None,
+            external_id: id,
+            revision,
+            body: metadata.to_string(),
+            metadata: render::provenance(&metadata).to_string(),
+            occurred_at: page
+                .get("created_time")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         }))
     }
 
     fn normalize(raw: RawDocument) -> Result<CanonicalDocument, SourceError> {
-        let metadata: Value = serde_json::from_str(&raw.metadata).unwrap_or(Value::Null);
-        Ok(CanonicalDocument {
-            title: Some(raw.external_id),
-            room: None,
-            name: None,
-            kind: SourceKind::File,
-            uri: metadata
-                .get("path")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            tags: Vec::new(),
-            segments: vec![Segment { text: raw.body }],
-        })
+        render::normalize(raw).map_err(failed)
+    }
+}
+
+fn tombstone(id: &str, reason: &str) -> RawDocument {
+    let metadata =
+        json!({"id": id, "lifecycle": "tombstone", "reason": reason, "format": 1}).to_string();
+    RawDocument {
+        external_id: id.into(),
+        revision: hash(&metadata),
+        body: String::new(),
+        metadata,
+        occurred_at: None,
     }
 }
 
 export!(Source);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn validates_stable_identity_and_progress_has_no_side_effects() {
+        let opts = vec![
+            ("account".into(), "work".into()),
+            ("workspace".into(), "true".into()),
+        ];
+        for locator in [
+            None,
+            Some("/tmp/files".into()),
+            Some("notion-scope:".into()),
+            Some("notion-scope:bad/name".into()),
+        ] {
+            assert!(Source::identify(locator, opts.clone()).is_err());
+        }
+        let source = Source::identify(Some("notion-scope:project".into()), opts).unwrap();
+        assert_eq!(source.account.as_deref(), Some("work"));
+        assert_eq!(Source::default_wing(source.clone()), "project");
+        assert_eq!(Source::default_room(), "pages");
+        assert!(
+            Source::read(
+                source,
+                Candidate {
+                    external_id: "notion-progress".into(),
+                    handle: "progress".into(),
+                    cursor_after: "null".into()
+                }
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            Source::normalize(tombstone("page", "trashed"))
+                .unwrap()
+                .segments
+                .is_empty()
+        );
+    }
+}

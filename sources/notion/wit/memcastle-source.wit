@@ -50,6 +50,7 @@ interface host {
     }
     run-process: func(program: string, args: list<string>, stdin: option<list<u8>>) -> result<process-output, string>;
     access-token: func() -> result<string, string>;
+    source-credential: func() -> result<string, string>;
 }
 
 interface adapter {

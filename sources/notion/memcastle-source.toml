@@ -3,7 +3,7 @@ format = 1
 [source]
 name = "notion"
 version = "0.1.0"
-description = "Text files from a selected directory"
+description = "Scoped Notion pages, block trees and database/data-source knowledge"
 
 [compatibility]
 contract = "0.4.0"
@@ -11,14 +11,76 @@ memcastle = ">=0.5, <0.6"
 
 [capabilities]
 incremental = true
+needs_credentials = true
+retains_raw = false
 
-# The host only allows access to the chosen directory.
-[permissions.filesystem]
-read = ["locator"]
+[permissions]
+credential = true
+process = ["curl"]
+
+[options.account]
+type = "string"
+description = "Required stable non-secret workspace namespace"
+
+[options.pages]
+type = "string"
+description = "Explicit page IDs, comma-separated or JSON list; does not imply descendants"
+
+[options.roots]
+type = "string"
+description = "Root page IDs including descendants, comma-separated or JSON list"
+
+[options.databases]
+type = "string"
+description = "Database IDs; queries every contained data source"
+
+[options.data_sources]
+type = "string"
+description = "Data source IDs whose row pages are selected"
+
+[options.exclude_pages]
+type = "string"
+description = "Page/ancestor IDs whose entire branches are excluded"
+
+[options.include_blocks]
+type = "string"
+description = "Only these block subtrees within selected pages (empty means all blocks)"
+
+[options.exclude_blocks]
+type = "string"
+description = "Excluded block subtrees; exclusion always wins"
+
+[options.workspace]
+type = "string"
+description = "Explicit opt-in to all integration-visible workspace content; default false"
+
+[options.title_prefix]
+type = "string"
+description = "Case-sensitive title prefix, intersected with other filters"
+
+[options.title_glob]
+type = "string"
+description = "Case-sensitive title glob"
+
+[options.title_regex]
+type = "string"
+description = "Case-sensitive Rust-regex title expression"
+
+[options.property_filter]
+type = "string"
+description = "JSON property predicate; supported Notion and/or, text, select/status, multi_select, checkbox and number conditions"
+
+[options.refresh_seconds]
+type = "string"
+description = "Complete reconciliation interval, 60..2592000 seconds; default 3600"
+
+[options.rescan]
+type = "string"
+description = "Change this generation key to force inventory-preserving reconciliation"
 
 [build]
 command = ["cargo", "build", "--release", "--target", "wasm32-wasip2", "--target-dir", "target"]
 output = "target/wasm32-wasip2/release/notion.wasm"
 
-[test]
-fixtures = "fixtures"
+# Selected-credential contract checks run through scripts/smoke_scoped_miners.mjs.
+# Core's generic fixture runner cannot inject a selected source credential.

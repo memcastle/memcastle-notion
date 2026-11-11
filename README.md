@@ -9,8 +9,13 @@
 
 Notion source for MemCastle
 
-This is a versioned MemCastle provider plugin.
-It includes source modules.
+Mine shared Notion pages, recursive block trees, databases and data sources into
+MemCastle. The independently versioned `notion` plugin contains the separately
+enabled `notion` source. It uses the official read-only API, stable page identities,
+durable incremental checkpoints and periodic reconciliation of previously mined content.
+
+See the [source guide](sources/notion/README.md) for integration setup, scoped miners,
+filters, supported content and synchronization behavior.
 
 ## Install
 
@@ -28,6 +33,16 @@ If the catalogue entry has no published release yet, build and package the proje
 
 After installation, explicitly enable the sources you want to use.
 
+```sh
+memcastle source enable notion
+```
+
+The daemon needs `curl` on its `PATH`. Create an internal Notion integration with
+**Read content**, share the desired pages/data sources with it, and select its token
+using an env/file credential reference in a source configuration. Credentials are
+never miner options. Each independent miner needs a unique, stable
+`notion-scope:<name>` locator; mining the whole visible workspace is explicit opt-in.
+
 ## Build and test locally
 
 You'll need a plugin-capable MemCastle Core binary and Git.
@@ -44,13 +59,26 @@ cargo test --manifest-path sources/<id>/Cargo.toml --locked --lib
 cargo build --manifest-path sources/<id>/Cargo.toml --locked --release --target wasm32-wasip2
 ```
 
+For this plugin the module ID and artifact name are both `notion`:
+
+```sh
+cp sources/notion/target/wasm32-wasip2/release/notion.wasm sources/notion/source.wasm
+```
+
 From the project root, package and smoke-test the result:
 
 ```sh
 memcastle plugin inspect --json
 memcastle plugin package
 memcastle plugin test dist/notion-VERSION.tar.gz
+ARCHIVE=dist/notion-VERSION.tar.gz node scripts/smoke_scoped_miners.mjs
 ```
+
+The offline smoke suite needs Node.js 24+ and Python 3. It installs the real Wasm
+archive into an isolated Core daemon with fixture credentials and a fake curl.
+No live Notion integration is needed. The generic `memcastle source test` runner
+cannot inject selected source credentials; these provider-owned lifecycle checks
+cover acquisition and checkpoints through real configured miners instead.
 
 Replace `VERSION` with the version printed by `memcastle plugin package`
 or the name of the archive in `dist/`.

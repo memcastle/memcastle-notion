@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Offline Notion transport. The smoke harness copies this next to its scenario file."""
+import json
+import pathlib
+import sys
+import urllib.parse
+
+config = dict()
+headers = []
+for line in sys.stdin.read().splitlines():
+    key, value = line.split(" = ", 1)
+    value = json.loads(value)
+    if key == "header":
+        headers.append(value)
+    else:
+        config[key] = value
+assert "Authorization: Bearer fixture-selected-token" in headers
+assert "Notion-Version: 2026-03-11" in headers
+assert all("fixture-selected-token" not in arg for arg in sys.argv)
+scenario_path = pathlib.Path(__file__).with_name("scenario.json")
+scenario = json.loads(scenario_path.read_text())
+url = urllib.parse.urlsplit(config["url"])
+assert url.scheme == "https" and url.netloc == "api.notion.com"
+path = url.path.removeprefix("/v1")
+query = urllib.parse.parse_qs(url.query)
+data = json.loads(config.get("data", "{}"))
+log_path = pathlib.Path(__file__).with_name("requests.jsonl")
+with log_path.open("a") as log:
+    log.write(json.dumps({"path": path, "query": query, "data": data}) + "\n")
+
+A, B, C, D, E, F = [f"{c * 8}-{c * 4}-{c * 4}-{c * 4}-{c * 12}" for c in "123456"]
+G, H, I = [f"{c * 8}-{c * 4}-{c * 4}-{c * 4}-{c * 12}" for c in "789"]
+P, Q, R = [f"{c * 8}-{c * 4}-{c * 4}-{c * 4}-{c * 12}" for c in "abc"]
+
+def rt(text):
+    return [{"type": "text", "plain_text": text, "text": {"content": text}}]
+
+def page(pid):
+    name = {A: "Alpha knowledge", B: "Beta reference", C: "Child knowledge", F: "Database knowledge", G: "Orbit child", I: "Alternate row"}[pid]
+    name = scenario.get("titles", {}).get(pid, name)
+    parent = {"type": "workspace", "workspace": True}
+    if pid == C:
+        parent = {"type": "page_id", "page_id": A}
+    if pid == F:
+        parent = {"type": "data_source_id", "data_source_id": E}
+    if pid == G:
+        parent = {"type": "page_id", "page_id": F}
+    if pid == I:
+        parent = {"type": "data_source_id", "data_source_id": H}
+    if scenario.get("moved") and pid == C:
+        parent = {"type": "page_id", "page_id": B}
+    return {"object": "page", "id": pid, "url": f"https://www.notion.so/{pid}", "parent": parent,
+            "created_time": "2026-01-01T00:00:00.000Z", "last_edited_time": "2026-01-01T00:00:00.000Z",
+            "in_trash": scenario.get("trash") == pid,
+            "properties": {"Name": {"id": "title", "type": "title", "title": rt(name)},
+                           "Status": {"id": "status", "type": "status", "status": {"name": scenario.get("status", "Ready")}}}}
+
+def block(bid, text, children=False, kind="paragraph"):
+    return {"object": "block", "id": bid, "type": kind, "has_children": children, kind: {"rich_text": rt(text)}}
+
+def listing(results, more=False, cursor=None):
+    return {"object": "list", "results": results, "has_more": more, "next_cursor": cursor}
+
+status = 200
+extra = ""
+if scenario.get("failure") and (not scenario.get("failure_path") or path == scenario["failure_path"]):
+    status = scenario["failure"]
+    extra = "Retry-After: 75\r\n"
+    result = {"message": "private fixture-selected-token response must never leak"}
+elif path.startswith("/pages/"):
+    pid = path.split("/")[2]
+    if pid == scenario.get("missing"):
+        status, result = 404, {"code": "object_not_found"}
+    else:
+        result = page(pid)
+elif path == f"/databases/{D}":
+    result = {"object": "database", "id": D, "parent": {"type": "workspace", "workspace": True}, "data_sources": [{"id": E}, {"id": H}]}
+elif path in (f"/data_sources/{E}", f"/data_sources/{H}"):
+    result = {"object": "data_source", "id": path.split("/")[2], "parent": {"type": "database_id", "database_id": D}}
+elif path in (f"/data_sources/{E}/query", f"/data_sources/{H}/query"):
+    assert config.get("request") == "POST"
+    result = listing([page(F if E in path else I)])
+elif path == "/search":
+    assert config.get("request") == "POST"
+    result = listing([page(A), page(B)] + ([page(F)] if scenario.get("newly_shared") else []))
+elif path.startswith("/blocks/") and path.endswith("/children"):
+    pid = path.split("/")[2]
+    if pid == A and not query.get("start_cursor"):
+        result = listing([block(P, "Quasar original " + scenario.get("edit", ""), True)], True, "next-block")
+    elif pid == A:
+        assert query["start_cursor"] == ["next-block"]
+        result = listing([] if scenario.get("nested_child") or scenario.get("moved") else [{"object": "block", "id": C, "type": "child_page", "has_children": False, "child_page": {"title": "Child knowledge"}}])
+    elif pid == P:
+        result = listing([block(Q, "Nebula nested")] + ([{"object": "block", "id": C, "type": "child_page", "has_children": False, "child_page": {"title": "Child knowledge"}}] if scenario.get("nested_child") else []))
+    elif pid == F:
+        result = listing([block(R, "Database row"), {"object": "block", "id": G, "type": "child_page", "has_children": False, "child_page": {"title": "Orbit child"}}])
+    elif pid == B:
+        result = listing([block(R, "Orion independent")] + ([{"object": "block", "id": C, "type": "child_page", "has_children": False, "child_page": {"title": "Child knowledge"}}] if scenario.get("moved") else []))
+    else:
+        result = listing([block(R, "Orion independent" if pid == B else "Satellite child" if pid == C else "Database row")])
+else:
+    raise AssertionError(f"unhandled fixture endpoint: {path}")
+sys.stdout.write(f"HTTP/2 {status}\r\nContent-Type: application/json\r\n{extra}\r\n" + json.dumps(result))

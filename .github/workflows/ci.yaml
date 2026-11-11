@@ -148,8 +148,30 @@ jobs:
       fail-fast: false
       matrix:
         core: ["development", "0.5"]
-    uses: memcastle/memcastle/.github/workflows/plugin-validation.yaml@main
-    with:
-      artifact-name: plugin-package
-      core-version: ${{ matrix.core }}
-      plugin-ref: ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: memcastle/memcastle@main
+        with:
+          version: ${{ matrix.core }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: plugin-package
+          path: .
+      # The generic source fixture runner cannot provide a selected credential or
+      # preserve opaque scope locators. Exercise the installed Wasm through real
+      # source configurations/miners instead, using an offline curl fixture.
+      - name: Validate archive and Notion lifecycle
+        run: |
+          set -euo pipefail
+          for archive in dist/notion-*.tar.gz; do
+            memcastle plugin test "$archive"
+            ARCHIVE="$archive" node scripts/smoke_scoped_miners.mjs
+          done
