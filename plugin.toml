@@ -1,0 +1,23 @@
+format = 1
+memcastle = ">=0.5, <0.6"
+# Add shared support files or directories here; integration manifests supply their own assets.
+artifacts = []
+
+[plugin]
+id = "notion"
+provider = "notion"
+description = "Notion source for MemCastle"
+repository = "https://github.com/memcastle/memcastle-notion"
+license = "MIT"
+
+
+
+[[modules]]
+id = "notion"
+type = "source"
+manifest = "sources/notion/memcastle-source.toml"
+entry = "sources/notion/source.wasm"
+contract = "0.4.0"
+
+
+

@@ -1,0 +1,21 @@
+{
+  "name": "text-files",
+  "description": "Two text files discovered one at a time",
+  "locator": "tree",
+  "limit": 1,
+  "documents": [
+    {
+      "external_id": "a.txt",
+      "title": "a.txt",
+      "kind": "file",
+      "segments": ["alpha\n"]
+    },
+    {
+      "external_id": "b.txt",
+      "title": "b.txt",
+      "kind": "file",
+      "segments": ["bravo\n"]
+    }
+  ],
+  "skipped": []
+}

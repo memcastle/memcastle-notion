@@ -1,0 +1,155 @@
+name: 🧩 CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag:
+        description: Reviewed release tag to build rather than the caller's branch commit
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+
+  source:
+    name: 🦀 Source ${{ matrix.source }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        source: ["notion"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@nextest
+
+      - uses: Swatinem/rust-cache@v2
+      - name: Check source formatting and warnings
+        env:
+          MODULE: ${{ matrix.source }}
+        run: |
+          cargo fmt --manifest-path "sources/$MODULE/Cargo.toml" --all -- --check
+          cargo clippy --manifest-path "sources/$MODULE/Cargo.toml" --locked --target wasm32-wasip2 -- -D warnings
+
+      - name: Run source tests with coverage and JUnit
+        id: source-tests
+        env:
+          MODULE: ${{ matrix.source }}
+        run: |
+          cd "sources/$MODULE"
+          cargo llvm-cov nextest --locked --config-file "$GITHUB_WORKSPACE/.config/nextest.toml" --no-tests=pass --lib
+          if grep -q '<testcase' target/nextest/default/junit.xml; then
+            mkdir -p coverage
+            cargo llvm-cov report --lcov --output-path coverage/lcov.info
+            echo 'has_tests=true' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: codecov/codecov-action@v7
+        if: ${{ steps.source-tests.outputs.has_tests == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        with:
+          files: sources/${{ matrix.source }}/coverage/lcov.info
+          flags: source-${{ matrix.source }}
+          use_oidc: true
+          fail_ci_if_error: true
+      - uses: codecov/codecov-action@v7
+        if: ${{ steps.source-tests.outputs.has_tests == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        with:
+          files: sources/${{ matrix.source }}/target/nextest/default/junit.xml
+          flags: source-${{ matrix.source }}
+          report_type: test_results
+          use_oidc: true
+          fail_ci_if_error: true
+
+      - name: Build reproducible source component
+        env:
+          MODULE: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          module_dir="$PWD/sources/$MODULE"
+          cargo_home="$(realpath "${CARGO_HOME:-$HOME/.cargo}")"
+          sysroot="$(rustc --print sysroot)"
+          commit="$(rustc --version --verbose | awk '/^commit-hash: / {print $2}')"
+          export CARGO_BUILD_RUSTC_WRAPPER=
+          unset RUSTFLAGS
+          export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=$cargo_home=/cargo"$'\x1f'"--remap-path-prefix=$sysroot/lib/rustlib/src/rust=/rustc/$commit"$'\x1f'"--remap-path-prefix=$module_dir=/module"
+          cargo build --manifest-path "$module_dir/Cargo.toml" --locked --release --target wasm32-wasip2
+          crate="$(cargo metadata --no-deps --format-version 1 --manifest-path "$module_dir/Cargo.toml" | jq -er '.packages[0].targets[] | select(.kind | index("cdylib")) | .name')"
+          cp "$module_dir/target/wasm32-wasip2/release/$crate.wasm" "$module_dir/source.wasm"
+          mkdir -p "$module_dir/dist"
+          cp "$module_dir/source.wasm" "$module_dir/dist/source.wasm"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: source-${{ matrix.source }}
+          path: sources/${{ matrix.source }}/source.wasm
+          if-no-files-found: error
+
+
+
+
+  package:
+    name: 🏗️ Package
+
+    needs: [source]
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: memcastle/memcastle@main
+        with:
+          version: development
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: source-notion
+          path: sources/notion/
+
+
+
+      - name: Package plugin
+        run: memcastle plugin package
+      - uses: actions/upload-artifact@v7
+        with:
+          name: plugin-package
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256sum
+            sources/*/source.wasm
+          if-no-files-found: error
+
+  validate:
+    name: 🧪 Check with Core
+    needs: package
+    if: ${{ always() && needs.package.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        core: ["development", "0.5"]
+    uses: memcastle/memcastle/.github/workflows/plugin-validation.yaml@main
+    with:
+      artifact-name: plugin-package
+      core-version: ${{ matrix.core }}
+      plugin-ref: ${{ inputs.tag }}

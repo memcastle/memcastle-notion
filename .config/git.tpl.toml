@@ -1,0 +1,40 @@
+# git-tpl — https://noirbizarre.github.io/git-tpl/configuration/
+#
+# This file is versioned with the project. Edit an answer and run
+# `git tpl update` to re-render the template with it.
+
+[template]
+source = "https://github.com/memcastle/memcastle-plugin.tpl"
+
+[answers]
+codecov = true
+codecov_covered_sources = []
+codecov_integration_target = "80%"
+codecov_patch_target = "80%"
+codecov_project_target = "80%"
+codecov_source_target = "80%"
+core_versions = [
+    "development",
+    "0.5",
+]
+description = "Notion source for MemCastle"
+embedding_template = "https://github.com/memcastle/memcastle-embedding-provider.tpl"
+embeddings = []
+gh_ship = true
+github_owner = "memcastle"
+integration_template = "https://github.com/memcastle/memcastle-integration.tpl"
+integrations = []
+memcastle = ">=0.5, <0.6"
+plugin_id = "notion"
+provider = "notion"
+registry = true
+repository_name = "memcastle-notion"
+ship_token = "app"
+source_template = "https://github.com/memcastle/memcastle-source.tpl"
+sources = ["notion"]
+
+[[composed]]
+from = "sources"
+source = "https://github.com/memcastle/memcastle-source.tpl"
+ref = "main"
+commit = "e298a33bde43c3cbe5a9a69d4af23b5e8103b6ff"

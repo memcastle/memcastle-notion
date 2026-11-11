@@ -1,0 +1,68 @@
+// Versioned MemCastle source contract; changes require a deliberate compatibility update.
+package memcastle:source@0.4.0;
+
+interface types {
+    record source-ref {
+        source: string,
+        account: option<string>,
+        locator: string,
+        options: list<tuple<string, string>>,
+    }
+    record candidate {
+        external-id: string,
+        cursor-after: string,
+        handle: string,
+    }
+    record discovery {
+        candidates: list<candidate>,
+        exhausted: bool,
+    }
+    record raw-document {
+        external-id: string,
+        revision: string,
+        body: string,
+        metadata: string,
+        occurred-at: option<string>,
+    }
+    enum source-kind { file, manual, transcript, other }
+    record segment { text: string }
+    record canonical-document {
+        title: option<string>,
+        room: option<string>,
+        name: option<string>,
+        kind: source-kind,
+        uri: option<string>,
+        tags: list<string>,
+        segments: list<segment>,
+    }
+    variant source-error {
+        cursor-invalid(string),
+        invalid-input(string),
+        failed(string),
+    }
+}
+
+interface host {
+    record process-output {
+        status: s32,
+        stdout: list<u8>,
+        stderr: list<u8>,
+    }
+    run-process: func(program: string, args: list<string>, stdin: option<list<u8>>) -> result<process-output, string>;
+    access-token: func() -> result<string, string>;
+}
+
+interface adapter {
+    use types.{source-ref, candidate, discovery, raw-document, canonical-document, source-error};
+    identify: func(locator: option<string>, options: list<tuple<string, string>>) -> result<source-ref, source-error>;
+    default-wing: func(source: source-ref) -> string;
+    default-room: func() -> string;
+    discover: func(source: source-ref, cursor: string, limit: u32) -> result<discovery, source-error>;
+    read: func(source: source-ref, candidate: candidate) -> result<option<raw-document>, source-error>;
+    normalize: func(raw: raw-document) -> result<canonical-document, source-error>;
+}
+
+world source {
+    import host;
+    export adapter;
+}

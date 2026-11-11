@@ -1,0 +1,10 @@
+dist/
+manifest.toml
+!integrations/*/dist/
+!integrations/*/dist/**
+sources/*/target/
+sources/*/coverage/
+sources/*/source.wasm
+integrations/*/node_modules/
+integrations/*/coverage/
+ship.release.json

@@ -1,0 +1,13 @@
+# $schema: https://noirbizarre.github.io/gh-ship/schema/config/v1.json
+version: 1
+release_branch: release/next
+workflows:
+  prepare: prepare-release
+  publish: publish-release
+pull_request:
+  title: "chore(release): {{ version }}"
+  header: "Review and merge the notion plugin release."
+  labels: [release]
+  reuse: true
+release:
+  draft: true
