@@ -126,6 +126,9 @@ required reconciliation extension. Add stable Core coverage when the feature is 
 Validation runs on pull requests and pushes to `main`.
 
 When modules have native tests, their jobs upload available LCOV and JUnit results to Codecov using OIDC.
+Source coverage jobs emit wit-bindgen's generated Rust under the build directory with `WIT_BINDGEN_DEBUG=1`.
+This keeps generated ABI glue out of provider coverage using cargo-llvm-cov's existing generated-file filtering;
+the configured coverage gates still apply to provider logic, and release builds are unchanged.
 Enable this repository in Codecov to see coverage and test-result statuses.
 
 Project and patch targets are `80%` and `80%`;
