@@ -1,5 +1,15 @@
 # notion
 
+## Modules and root tasks
+
+- Source: [notion](sources/notion/).
+
+Use `mise tasks ls` for `source:notion:build`, `source:notion:test`, `source:notion:lint`, and `source:notion:format:check`.
+The build task stages `source.wasm` for packaging; native tests do not replace host conformance.
+Requires Rust 1.100+, `wasm32-wasip3`, wasm-tools 1.263.0, and upstream development Core containing `828f0f6`.
+Stable 0.5.2 predates WASI 0.3 despite sharing the development version string; the compatibility range is transitional.
+Run `python3 scripts/validate_component.py source sources/notion/source.wasm` before host and archive checks.
+
 [![CI][ci-badge]][ci-workflow] [![Codecov][codecov-badge]][codecov-project]
 
 [ci-badge]: https://github.com/memcastle/memcastle-notion/actions/workflows/ci.yaml/badge.svg?branch=main
@@ -33,7 +43,7 @@ Core retrieves and checks the release archive for you.
 
 This implementation requires reconciliation-capable Core, currently the
 [development release](https://github.com/memcastle/memcastle/releases/tag/development)
-at `c311d09` or newer. Stable Core 0.5 releases predating that change are unsupported,
+at `828f0f6` or a verified descendant. Stable Core 0.5 releases predating that change are unsupported,
 even when they report the same `0.5.2` version. Use that Core for publisher commands too.
 
 If the catalogue entry has no published release yet, build and package the project first (below).
@@ -54,7 +64,7 @@ Core keeps their state independent. Mining the whole visible workspace is explic
 
 You'll need a plugin-capable MemCastle Core binary and Git.
 
-Install Rust with the `wasm32-wasip2` target for source and embedding modules.
+Install Rust 1.100+ with the `wasm32-wasip3` target for source modules.
 
 For each source, run its tests, build the Wasm component and copy the compiled component
 to `sources/<id>/source.wasm`.
@@ -63,13 +73,13 @@ See the module's README and the CI workflow for its crate-specific artifact name
 ```sh
 cargo generate-lockfile --manifest-path sources/<id>/Cargo.toml
 cargo test --manifest-path sources/<id>/Cargo.toml --locked --lib
-cargo build --manifest-path sources/<id>/Cargo.toml --locked --release --target wasm32-wasip2
+cargo build --manifest-path sources/<id>/Cargo.toml --locked --release --target wasm32-wasip3
 ```
 
 For this plugin the module ID and artifact name are both `notion`:
 
 ```sh
-cp sources/notion/target/wasm32-wasip2/release/notion.wasm sources/notion/source.wasm
+cp sources/notion/target/wasm32-wasip3/release/notion.wasm sources/notion/source.wasm
 ```
 
 From the project root, package and smoke-test the result:

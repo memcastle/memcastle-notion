@@ -11,6 +11,10 @@
 - This render has no embedding providers.
 - Check affected modules, then run `memcastle plugin package` and `memcastle plugin test`
   on the resulting archive. Use a plugin-capable Core binary.
+  WASI modules require migrated development Core (`828f0f6` or later), Rust 1.100,
+  `wasm32-wasip3` and wasm-tools 1.263.0; stable 0.5.2 predates the migration.
+  Validate components with `scripts/validate_component.py` and run the module's real-host conformance checks.
+
   Keep the coverage-reporting module lists in template answers
   in sync with modules that produce nonempty LCOV.
 - Template answers and child revisions live in `.config/git.tpl.toml`;

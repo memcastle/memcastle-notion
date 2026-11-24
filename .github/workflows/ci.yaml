@@ -34,21 +34,25 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.sha }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
-          targets: wasm32-wasip2
+          targets: wasm32-wasip3
+          components: rustfmt, clippy, llvm-tools-preview
 
-          components: llvm-tools-preview
+
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
 
       - uses: Swatinem/rust-cache@v2
+      - uses: jdx/mise-action@v5
+        with:
+          install: false
       - name: Check source formatting and warnings
         env:
           MODULE: ${{ matrix.source }}
         run: |
           cargo fmt --manifest-path "sources/$MODULE/Cargo.toml" --all -- --check
-          cargo clippy --manifest-path "sources/$MODULE/Cargo.toml" --locked --target wasm32-wasip2 -- -D warnings
+          cargo clippy --manifest-path "sources/$MODULE/Cargo.toml" --locked --target wasm32-wasip3 -- -D warnings
 
       - name: Run source tests with coverage and JUnit
         id: source-tests
@@ -90,9 +94,10 @@ jobs:
           export CARGO_BUILD_RUSTC_WRAPPER=
           unset RUSTFLAGS
           export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=$cargo_home=/cargo"$'\x1f'"--remap-path-prefix=$sysroot/lib/rustlib/src/rust=/rustc/$commit"$'\x1f'"--remap-path-prefix=$module_dir=/module"
-          cargo build --manifest-path "$module_dir/Cargo.toml" --locked --release --target wasm32-wasip2
+          cargo build --manifest-path "$module_dir/Cargo.toml" --locked --release --target wasm32-wasip3
           crate="$(cargo metadata --no-deps --format-version 1 --manifest-path "$module_dir/Cargo.toml" | jq -er '.packages[0].targets[] | select(.kind | index("cdylib")) | .name')"
-          cp "$module_dir/target/wasm32-wasip2/release/$crate.wasm" "$module_dir/source.wasm"
+          cp "$module_dir/target/wasm32-wasip3/release/$crate.wasm" "$module_dir/source.wasm"
+          mise exec cargo:wasm-tools@1.263.0 -- python3 scripts/validate_component.py source "$module_dir/source.wasm"
           mkdir -p "$module_dir/dist"
           cp "$module_dir/source.wasm" "$module_dir/dist/source.wasm"
       - uses: actions/upload-artifact@v7

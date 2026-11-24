@@ -16,8 +16,10 @@ and build its component to `sources/<id>/source.wasm` before packaging.
 ## Check a change
 
 Install a plugin-capable MemCastle Core binary with reconciliation extension `0.1.0`
-(currently development Core at `c311d09` or newer).
-For source and embedding modules, install Rust with the `wasm32-wasip2` target.
+(currently upstream development Core at `828f0f6` or a verified descendant).
+Install Rust 1.100+ with `wasm32-wasip3`, Python 3.11+, and wasm-tools 1.263.0.
+Use `mise tasks ls` for typed module tasks described in [root tasks](README.md#modules-and-root-tasks).
+Validate components with `scripts/validate_component.py` before fixture-backed host conformance.
 
 Run the affected module's tests and build, then from the project root:
 

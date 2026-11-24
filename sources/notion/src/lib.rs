@@ -17,7 +17,8 @@ use memcastle::source::types::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-wit_bindgen::generate!({ path: "wit", world: "reconciled-source" });
+// Stackful bindings preserve ordinary acquisition code behind async WIT exports.
+wit_bindgen::generate!({ path: "wit", world: "reconciled-source", sync: true });
 
 struct Source;
 
