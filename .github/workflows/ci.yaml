@@ -58,6 +58,8 @@ jobs:
         id: source-tests
         env:
           MODULE: ${{ matrix.source }}
+          # Keep generated ABI code under target/ instead of attributing it to the macro call in provider code.
+          WIT_BINDGEN_DEBUG: '1'
         run: |
           cd "sources/$MODULE"
           cargo llvm-cov nextest --locked --config-file "$GITHUB_WORKSPACE/.config/nextest.toml" --no-tests=pass --lib
