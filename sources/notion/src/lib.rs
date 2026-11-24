@@ -3,7 +3,8 @@
 use serde_json::{Value, json};
 use std::path::Path;
 
-wit_bindgen::generate!({ path: "wit", world: "source" });
+// Stackful bindings let ordinary Rust I/O suspend behind async-typed WASI 0.3 exports.
+wit_bindgen::generate!({ path: "wit", world: "source", sync: true });
 
 use exports::memcastle::source::adapter::Guest;
 use memcastle::source::types::{

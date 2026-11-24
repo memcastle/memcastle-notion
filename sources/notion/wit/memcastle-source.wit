@@ -1,68 +1,171 @@
-// Versioned MemCastle source contract; changes require a deliberate compatibility update.
-package memcastle:source@0.4.0;
+// The MemCastle source contract, version 0.5.0 (docs/adr/026, docs/writing-sources.md).
+//
+// A source is a WebAssembly Component implementing the `source` world. It is the same logical contract as the
+// native `SourceAdapter` trait: the host calls `identify`, `discover`, `read` and `normalize`, and does everything
+// else (chunking, deduplication, drawers, cursors, jobs). A source never sees the store.
+//
+// Cursors and metadata cross the boundary as JSON text, so the contract does not need to change for a source to
+// carry richer ones. `contract` in `memcastle-source.toml` names the version of this file a source was built for.
+package memcastle:source@0.5.0;
 
 interface types {
+    /// The identity of a place that is mined.
     record source-ref {
+        /// The source's name, as in `memcastle-source.toml`.
         source: string,
         account: option<string>,
         locator: string,
+        /// The options of this run (`since`, `dir`), as `identify` validated and normalised them. They are not part
+        /// of the identity: a filter that selects a different slice of the same place must be folded into `account`
+        /// or `locator` by `identify`, so each slice has a cursor of its own; one that only narrows must not be.
         options: list<tuple<string, string>>,
     }
+
+    /// A document found by `discover`, not yet read.
     record candidate {
+        /// Stable across runs and across revisions of the document.
         external-id: string,
+        /// JSON: the cursor to store once this candidate and every one before it are done.
         cursor-after: string,
+        /// Whatever `read` needs to read it back; opaque to the host.
         handle: string,
     }
+
     record discovery {
+        /// In cursor order, at most the requested limit.
         candidates: list<candidate>,
+        /// Whether nothing is left past the last candidate.
         exhausted: bool,
     }
+
     record raw-document {
         external-id: string,
+        /// Changes exactly when the content does.
         revision: string,
         body: string,
+        /// JSON object of source-specific facts.
         metadata: string,
+        /// RFC 3339.
         occurred-at: option<string>,
     }
-    enum source-kind { file, manual, transcript, other }
-    record segment { text: string }
+
+    enum source-kind {
+        file,
+        manual,
+        transcript,
+        other,
+    }
+
+    record segment {
+        text: string,
+    }
+
     record canonical-document {
         title: option<string>,
+        /// The room to file under; the source's default room when absent.
         room: option<string>,
+        /// A drawer name for the document's first chunk, when it has a good one.
         name: option<string>,
         kind: source-kind,
         uri: option<string>,
         tags: list<string>,
         segments: list<segment>,
     }
+
     variant source-error {
+        /// The cursor is not one this source produced; the host suggests mining with `--full`.
         cursor-invalid(string),
+        /// The locator is not valid for this source.
         invalid-input(string),
+        /// Anything else that should fail the job.
         failed(string),
     }
 }
 
+/// What the host offers a source beyond WASI. Everything here is granted by the manifest's `[permissions]`.
 interface host {
     record process-output {
+        /// The exit status; -1 when the program was killed by a signal.
         status: s32,
         stdout: list<u8>,
         stderr: list<u8>,
     }
+
+    /// Run a program named in `permissions.process`, by exact name and without a shell. The host refuses any other
+    /// program, bounds the run by the source's time limit, and caps the size of what it returns.
     run-process: func(program: string, args: list<string>, stdin: option<list<u8>>) -> result<process-output, string>;
+
+    /// A current access token for the OAuth sign-in the manifest declares under `[permissions.oauth]`, or an error
+    /// saying why there is none (the source was never signed in, the provider revoked it, the provider is unreachable).
+    ///
+    /// The host runs the sign-in (`memcastle source auth <source>`), keeps the tokens and renews them; a source only ever
+    /// sees the access token, and asks again for each call it makes, because one may have expired since. It is refused
+    /// when the manifest declares no sign-in, and `normalize` never gets one.
     access-token: func() -> result<string, string>;
+
+    /// The selected env/file credential for this mining job, when `[permissions] credential = true` was consented.
+    /// Only acquisition calls (identify, discover, read, and the extension's reconcile/acquire) may request it.
+    /// Normalize never receives it. It is not placed in WASI's environment or a host-run process.
+    source-credential: func() -> result<string, string>;
 }
 
 interface adapter {
     use types.{source-ref, candidate, discovery, raw-document, canonical-document, source-error};
-    identify: func(locator: option<string>, options: list<tuple<string, string>>) -> result<source-ref, source-error>;
+
+    /// Validate `locator` (or choose the source's default when absent) and the run's `options` (key and value, both
+    /// strings; the keys the manifest's `[options]` declares) and return the source's identity, carrying the options
+    /// as it normalised them. Two spellings of the same place must give the same identity. An option the source does
+    /// not understand is an `invalid-input` error, never ignored.
+    // Acquisition may suspend on WASI 0.3 I/O; sync-typed functions cannot wait on component tasks.
+    identify: async func(locator: option<string>, options: list<tuple<string, string>>) -> result<source-ref, source-error>;
+
+    /// The wing drawers are filed under when the caller chooses none.
     default-wing: func(source: source-ref) -> string;
+
+    /// The room drawers are filed under when a document names none.
     default-room: func() -> string;
-    discover: func(source: source-ref, cursor: string, limit: u32) -> result<discovery, source-error>;
-    read: func(source: source-ref, candidate: candidate) -> result<option<raw-document>, source-error>;
+
+    /// Candidates strictly after `cursor` (JSON; `null` is the beginning), in cursor order, at most `limit`.
+    discover: async func(source: source-ref, cursor: string, limit: u32) -> result<discovery, source-error>;
+
+    /// Read a candidate, or return none to skip it (gone since discovery, binary, too large).
+    read: async func(source: source-ref, candidate: candidate) -> result<option<raw-document>, source-error>;
+
+    /// Express a raw document as a canonical one. Pure: the host runs it with no filesystem, no environment, no
+    /// network and no process access, whatever the manifest grants.
     normalize: func(raw: raw-document) -> result<canonical-document, source-error>;
 }
 
 world source {
     import host;
     export adapter;
+}
+
+// Optional extension, selected by compatibility.reconciliation = "0.1.0".
+// The extension shares the source package's async acquisition baseline.
+interface reconciliation {
+    use types.{source-ref, candidate, raw-document, source-error};
+    record known-document {
+        pending: bool,
+        retired: bool,
+        external-id: string,
+        revision: string,
+        metadata: string,
+    }
+    variant decision { unchanged, refresh(string), retire(string) }
+    variant acquisition { document(raw-document), skip, retire(string) }
+    record discovery-page {
+        candidates: list<candidate>,
+        exhausted: bool,
+        cursor-after: option<string>,
+    }
+    reconcile: async func(source: source-ref, known: known-document) -> result<decision, source-error>;
+    discover: async func(source: source-ref, cursor: string, limit: u32) -> result<discovery-page, source-error>;
+    acquire: async func(source: source-ref, candidate: candidate) -> result<acquisition, source-error>;
+}
+
+world reconciled-source {
+    import host;
+    export adapter;
+    export reconciliation;
 }

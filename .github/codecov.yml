@@ -30,8 +30,8 @@ component_management:
       statuses:
         - type: project
 
-          target: 0%
-          informational: true
+          target: "80%"
+          threshold: 0%
 
 
 

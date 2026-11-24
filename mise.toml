@@ -1,2 +1,32 @@
+# Root task configuration and optional release tooling.
+
 [tools]
 git-cliff = "2.12.0"
+
+[tasks."source:notion:format:check"]
+description = "Check formatting for source notion"
+dir = "sources/notion"
+run = "cargo fmt --all -- --check"
+
+[tasks."source:notion:lint"]
+description = "Lint source notion"
+dir = "sources/notion"
+run = "cargo clippy --locked --target wasm32-wasip3 -- -D warnings"
+
+[tasks."source:notion:test"]
+description = "Run native tests for source notion"
+dir = "sources/notion"
+run = "cargo test --locked --lib"
+
+[tasks."source:notion:build"]
+description = "Build the package-ready component for source notion"
+dir = "sources/notion"
+run = '''
+set -eu
+cargo build --locked --release --target wasm32-wasip3
+metadata="$(cargo metadata --locked --no-deps --format-version 1)"
+crate="$(printf '%s' "$metadata" | jq -er '.packages[] | select(.manifest_path == (env.PWD + "/Cargo.toml")) | .targets[] | select(.kind | index("cdylib")) | .name')"
+target="$(printf '%s' "$metadata" | jq -er '.target_directory')"
+cp "$target/wasm32-wasip3/release/$crate.wasm" source.wasm
+'''
+
