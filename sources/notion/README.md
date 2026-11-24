@@ -1,12 +1,12 @@
 # Notion source
 
-A read-only `memcastle:source@0.4.0` adapter for pages, database/data-source rows,
+A read-only `memcastle:source@0.5.0` adapter for pages, database/data-source rows,
 recursive blocks, page properties, links and attachment metadata. Uses the official
 Notion API with `Notion-Version: 2026-03-11`. No binary downloads, OCR, writeback or OAuth.
 
 The module exports `reconciled-source` and declares `compatibility.reconciliation = "0.1.0"`.
 It requires Core with [memcastle/memcastle#378](https://github.com/memcastle/memcastle/pull/378),
-currently the development release at `c311d09` or newer. Older stable 0.5 Core does
+currently upstream development at `828f0f6` or a verified descendant. Older stable 0.5 Core does
 not support the extension, including older binaries also reporting version `0.5.2`.
 
 ## Set up an integration
@@ -229,10 +229,10 @@ From the repository root:
 ```sh
 cargo generate-lockfile --manifest-path sources/notion/Cargo.toml
 cargo fmt --manifest-path sources/notion/Cargo.toml --all -- --check
-cargo clippy --manifest-path sources/notion/Cargo.toml --locked --target wasm32-wasip2 -- -D warnings
+cargo clippy --manifest-path sources/notion/Cargo.toml --locked --target wasm32-wasip3 -- -D warnings
 cargo test --manifest-path sources/notion/Cargo.toml --locked --lib
-cargo build --manifest-path sources/notion/Cargo.toml --locked --release --target wasm32-wasip2
-cp sources/notion/target/wasm32-wasip2/release/notion.wasm sources/notion/source.wasm
+cargo build --manifest-path sources/notion/Cargo.toml --locked --release --target wasm32-wasip3
+cp sources/notion/target/wasm32-wasip3/release/notion.wasm sources/notion/source.wasm
 memcastle plugin inspect --json
 memcastle plugin package
 memcastle plugin test dist/notion-VERSION.tar.gz
@@ -240,7 +240,7 @@ PATH="$PWD/sources/notion/fixtures/bin:$PATH" memcastle source test sources/noti
 ARCHIVE=dist/notion-VERSION.tar.gz node scripts/smoke_scoped_miners.mjs
 ```
 
-Install the `wasm32-wasip2` target and use reconciliation-capable Core for all
+Install Rust 1.100+ and the `wasm32-wasip3` target and use upstream development Core for all
 publisher/test commands, as well as the daemon. Commit `Cargo.lock`.
 The smoke suite requires Node.js 24+ and Python 3, uses real Wasm and an isolated Core
 daemon, and replaces curl with offline scenarios. Generic `memcastle source test`

@@ -13,9 +13,7 @@ codecov_integration_target = "80%"
 codecov_patch_target = "80%"
 codecov_project_target = "80%"
 codecov_source_target = "80%"
-core_versions = [
-    "development",
-]
+core_versions = ["development"]
 description = "Notion source for MemCastle"
 embedding_template = "https://github.com/memcastle/memcastle-embedding-provider.tpl"
 embeddings = []
@@ -36,4 +34,4 @@ sources = ["notion"]
 from = "sources"
 source = "https://github.com/memcastle/memcastle-source.tpl"
 ref = "main"
-commit = "e298a33bde43c3cbe5a9a69d4af23b5e8103b6ff"
+commit = "c417985f9bc97f467d5ff2a1d959f4130368b9c9"
